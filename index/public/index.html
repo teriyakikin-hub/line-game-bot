@@ -1,7 +1,7 @@
 const express = require('express');
 const line = require('@line/bot-sdk');
 const path = require('path');
-const cron = require('node-cron'); // 時間監視用
+const cron = require('node-cron'); // ★機能3: 時間監視用
 
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
@@ -17,7 +17,7 @@ const app = express();
 // メモリ上で募集データを管理
 const activeRecruitments = {};
 
-// 静的ファイルの提供（LIFF用 html 等）→ index/public/ の中身が公開される
+// 静的ファイルの提供（LIFF用 html 等）
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Webhookの署名検証ミドルウェア
@@ -42,17 +42,12 @@ app.get('/api/recruitment/:id', (req, res) => {
   res.json(rec);
 });
 
-// --- 参加 / キャンセル / 締め切り / 人数制限チェック API ---
+// --- 【機能1】参加 / キャンセル / 締め切り / 人数制限チェック API ---
 app.post('/api/action', (req, res) => {
   const { recId, userId, userName, action } = req.body;
   const rec = activeRecruitments[recId];
 
   if (!rec) return res.status(400).json({ error: '募集が存在しないか終了しています。' });
-
-  // 締め切り後は参加・キャンセル不可
-  if (rec.closed && action !== 'close') {
-    return res.status(400).json({ error: 'この募集は締め切られています。' });
-  }
 
   // 締め切り権限チェック（募集主のみ）
   if (action === 'close' && userId !== rec.ownerId) {
@@ -61,15 +56,15 @@ app.post('/api/action', (req, res) => {
 
   if (action === 'join') {
     if (!rec.participants.includes(userName)) {
-
-      // 人数制限のチェック処理
+      
+      // ★人数制限のチェック処理
       if (rec.members !== '制限なし') {
         const maxMembers = parseInt(rec.members.replace('人', ''), 10);
         if (!isNaN(maxMembers) && rec.participants.length >= maxMembers) {
           return res.status(400).json({ error: '定員に達しているため参加できません！💦' });
         }
       }
-
+      
       rec.participants.push(userName);
     }
   } else if (action === 'leave') {
@@ -118,12 +113,11 @@ async function handleEvent(event) {
       time: time,
       members: members,
       ownerId: userId,
-      ownerName: userName,   // 記録メッセージ用
       groupId: groupId,
       participants: [userName],
       closed: false,
-      notified: false,       // 結果カード送信済みフラグ
-      createdAt: Date.now()  // 30日自動削除用の作成日時
+      notified: false,       // ★【機能3】通知済みフラグ
+      createdAt: Date.now()   // ★【機能2】30日自動削除用の作成日時
     };
 
     const liffUrl = `https://liff.line.me/${process.env.LIFF_ID}?recId=${recId}`;
@@ -173,7 +167,7 @@ async function handleEvent(event) {
   }
 }
 
-// --- 30日経過した古い募集データの自動クリーンアップ ---
+// --- 【機能2】30日経過した古い募集データの自動クリーンアップ ---
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 function cleanupOldRecruitments() {
   const now = Date.now();
@@ -188,11 +182,10 @@ function cleanupOldRecruitments() {
 // 24時間に1回クリーンアップを実行
 setInterval(cleanupOldRecruitments, 24 * 60 * 60 * 1000);
 
-// --- 指定時間に結果カード送信 → 10分後に削除して記録を送信 ---
-const RECORD_AFTER_MS = 10 * 60 * 1000;
-
+// --- 【機能3】指定時間になったら自動で結果カードを送信 ---
 cron.schedule('* * * * *', async () => {
-  const currentHHMM = new Date().toLocaleTimeString('ja-JP', {
+  const now = new Date();
+  const currentHHMM = now.toLocaleTimeString('ja-JP', {
     timeZone: 'Asia/Tokyo',
     hour: '2-digit',
     minute: '2-digit',
@@ -253,36 +246,6 @@ cron.schedule('* * * * *', async () => {
       } catch (err) {
         console.error('結果カード送信エラー:', err);
       }
-
-      // 10分後：データを消して、記録を普通のメッセージで送信
-      setTimeout(async () => {
-        const target = activeRecruitments[recId];
-        if (!target) return;
-
-        const names = target.participants.length > 0
-          ? target.participants.join('、')
-          : 'なし';
-
-        const recordText =
-          `📝 募集の記録\n` +
-          `募集主：${target.ownerName || '不明'}\n` +
-          `時間：${target.time}\n` +
-          `内容：${target.game}\n` +
-          `参加者：${names}`;
-
-        delete activeRecruitments[recId];
-        console.log(`[自動削除] ${recId}`);
-
-        try {
-          await client.pushMessage({
-            to: target.groupId,
-            messages: [{ type: 'text', text: recordText }]
-          });
-          console.log(`[記録送信完了] ${recId}`);
-        } catch (err) {
-          console.error('記録送信エラー:', err);
-        }
-      }, RECORD_AFTER_MS);
     }
   }
 });
