@@ -3,14 +3,12 @@ const line = require('@line/bot-sdk');
 const path = require('path');
 
 const config = {
-  channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
-  channelSecret: process.env.CHANNEL_SECRET
+  channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN || '',
+  channelSecret: process.env.CHANNEL_SECRET || ''
 };
 
 const client = new line.Client(config);
 const app = express();
-
-app.use(express.json());
 
 const userSessions = {};
 const activeRecruitments = {};
@@ -20,41 +18,21 @@ app.get('/liff', (req, res) => {
   res.sendFile(path.join(__dirname, 'liff.html'));
 });
 
-// LIFFからのAPIリクエストを受け取る処理
+// API endpoint for LIFF data
 app.get('/api/recruitment/:id', (req, res) => {
   const rec = activeRecruitments[req.params.id];
   if (!rec) return res.status(404).json({ error: 'Not found' });
   res.json(rec);
 });
 
-app.post('/api/action', async (req, res) => {
-  const { recId, userId, userName, action } = req.body;
-  const rec = activeRecruitments[recId];
-
-  if (!rec) return res.status(400).json({ error: '募集が存在しないか終了しています。' });
-
-  if (action === 'close' && userId !== rec.ownerId) {
-    return res.status(403).json({ error: '募集主しか締め切れません！' });
-  }
-
-  if (action === 'join') {
-    if (!rec.participants.includes(userName)) {
-      rec.participants.push(userName);
-    }
-  } else if (action === 'leave') {
-    rec.participants = rec.participants.filter(name => name !== userName);
-  } else if (action === 'close') {
-    rec.closed = true;
-  }
-
-  res.json({ success: true, rec });
-});
+app.use('/webhook', express.json());
 
 app.post('/webhook', line.middleware(config), (req, res) => {
   Promise.all(req.body.events.map(handleEvent))
     .then((result) => res.json(result))
     .catch((err) => {
       console.error('Webhook Error:', err);
+      // LINEの「検証」時にエラーにならないよう200を返す
       res.status(200).end();
     });
 });
@@ -140,7 +118,8 @@ function sendNewCard(replyToken, ownerId, game, time, members) {
     closed: false
   };
 
-  const liffUrl = `https://liff.line.me/${process.env.LIFF_ID}?recId=${recId}`;
+  const liffId = process.env.LIFF_ID || '';
+  const liffUrl = liffId ? `https://liff.line.me/${liffId}?recId=${recId}` : 'https://line.me';
 
   return client.replyMessage(replyToken, {
     type: 'flex',
