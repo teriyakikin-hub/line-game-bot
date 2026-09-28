@@ -1,5 +1,6 @@
 const express = require('express');
 const line = require('@line/bot-sdk');
+const path = require('path');
 
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
@@ -9,8 +10,45 @@ const config = {
 const client = new line.Client(config);
 const app = express();
 
+app.use(express.json());
+
 const userSessions = {};
 const activeRecruitments = {};
+
+// LIFF用のWebページを提供
+app.get('/liff', (req, res) => {
+  res.sendFile(path.join(__dirname, 'liff.html'));
+});
+
+// LIFFからのAPIリクエストを受け取る処理
+app.get('/api/recruitment/:id', (req, res) => {
+  const rec = activeRecruitments[req.params.id];
+  if (!rec) return res.status(404).json({ error: 'Not found' });
+  res.json(rec);
+});
+
+app.post('/api/action', async (req, res) => {
+  const { recId, userId, userName, action } = req.body;
+  const rec = activeRecruitments[recId];
+
+  if (!rec) return res.status(400).json({ error: '募集が存在しないか終了しています。' });
+
+  if (action === 'close' && userId !== rec.ownerId) {
+    return res.status(403).json({ error: '募集主しか締め切れません！' });
+  }
+
+  if (action === 'join') {
+    if (!rec.participants.includes(userName)) {
+      rec.participants.push(userName);
+    }
+  } else if (action === 'leave') {
+    rec.participants = rec.participants.filter(name => name !== userName);
+  } else if (action === 'close') {
+    rec.closed = true;
+  }
+
+  res.json({ success: true, rec });
+});
 
 app.post('/webhook', line.middleware(config), (req, res) => {
   Promise.all(req.body.events.map(handleEvent))
@@ -22,73 +60,6 @@ app.post('/webhook', line.middleware(config), (req, res) => {
 });
 
 async function handleEvent(event) {
-  // ポストバックイベント（ボタンが押された時）
-  if (event.type === 'postback') {
-    const data = new URLSearchParams(event.postback.data);
-    const action = data.get('action');
-    const recId = data.get('recId');
-    const userId = event.source.userId;
-    const rec = activeRecruitments[recId];
-
-    if (!rec) {
-      return client.replyMessage(event.replyToken, {
-        type: 'text',
-        text: 'この募集は終了しているか、期限切れです。'
-      });
-    }
-
-    // 締切権限チェック（作成者以外はメッセージ送信）
-    if (action === 'close' && userId !== rec.ownerId) {
-      return client.replyMessage(event.replyToken, {
-        type: 'text',
-        text: '⚠️ 募集を締め切ることができるのは、募集を開始した本人のみです！'
-      });
-    }
-
-    // ユーザー名取得
-    let userName = 'メンバー';
-    try {
-      const profile = await client.getProfile(userId);
-      userName = profile.displayName;
-    } catch (e) {
-      if (event.source.groupId) {
-        try {
-          const profile = await client.getGroupMemberProfile(event.source.groupId, userId);
-          userName = profile.displayName;
-        } catch (err) {}
-      }
-    }
-
-    // データ更新
-    if (action === 'join') {
-      if (!rec.participants.includes(userName)) {
-        rec.participants.push(userName);
-      }
-    } else if (action === 'leave') {
-      rec.participants = rec.participants.filter(name => name !== userName);
-    } else if (action === 'close') {
-      rec.closed = true;
-    }
-
-    // ★重要: メッセージ更新 API を試行（元のカードを直接編集してメッセージを増やさない）
-    try {
-      // replyToken ではなく、元メッセージを直接アップデート
-      await client.updateFlexMessage(event.message.id, {
-        type: 'flex',
-        altText: rec.closed ? `【募集終了】${rec.game}` : `【募集更新】${rec.game}`,
-        contents: createFlexBubble(recId, rec)
-      });
-      return Promise.resolve(null);
-    } catch (err) {
-      // 万が一 updateFlexMessage が使えない環境（通常アカウント等）の場合は旧方式で返信
-      return client.replyMessage(event.replyToken, {
-        type: 'flex',
-        altText: rec.closed ? `【募集終了】${rec.game}` : `【募集更新】${rec.game}`,
-        contents: createFlexBubble(recId, rec)
-      });
-    }
-  }
-
   if (event.type !== 'message' || event.message.type !== 'text') {
     return Promise.resolve(null);
   }
@@ -96,7 +67,6 @@ async function handleEvent(event) {
   const userId = event.source.userId;
   const text = event.message.text.trim();
 
-  // 1. 一発募集コマンド (/募集 ゲーム 時間 人数)
   if (text.startsWith('/募集 ') || text.startsWith('募集 ')) {
     const args = text.split(/\s+/).slice(1);
     if (args.length >= 3) {
@@ -104,7 +74,6 @@ async function handleEvent(event) {
     }
   }
 
-  // 2. 対話募集スタート
   if (text === '募集' || text === '/募集') {
     userSessions[userId] = { step: 'GAME' };
     return client.replyMessage(event.replyToken, {
@@ -124,7 +93,6 @@ async function handleEvent(event) {
     });
   }
 
-  // 3. 対話ステップ処理
   if (userSessions[userId]) {
     const session = userSessions[userId];
 
@@ -172,92 +140,52 @@ function sendNewCard(replyToken, ownerId, game, time, members) {
     closed: false
   };
 
+  const liffUrl = `https://liff.line.me/${process.env.LIFF_ID}?recId=${recId}`;
+
   return client.replyMessage(replyToken, {
     type: 'flex',
     altText: `【募集】${game} (${time}〜)`,
-    contents: createFlexBubble(recId, activeRecruitments[recId])
+    contents: {
+      type: 'bubble',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          { type: 'text', text: '🎮 メンバー募集！', weight: 'bold', size: 'lg', color: '#1DB446' },
+          { type: 'text', text: game, weight: 'bold', size: 'xl', margin: 'md' },
+          { type: 'separator', margin: 'md' },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'md',
+            spacing: 'sm',
+            contents: [
+              { type: 'text', text: `⏰ 開始時間: ${time}`, size: 'sm', color: '#555555' },
+              { type: 'text', text: `👥 定員: ${memberText}`, size: 'sm', color: '#555555' }
+            ]
+          }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            color: '#1DB446',
+            action: {
+              type: 'uri',
+              label: '参加・確認・管理する',
+              uri: liffUrl
+            }
+          }
+        ]
+      }
+    }
   });
-}
-
-function createFlexBubble(recId, rec) {
-  const participantNames = rec.participants.length > 0 
-    ? rec.participants.join(', ') 
-    : 'なし';
-
-  const statusTitle = rec.closed ? '❌ 募集終了' : '🎮 メンバー募集！';
-  const themeColor = rec.closed ? '#aaaaaa' : '#1DB446';
-
-  const footerButtons = rec.closed ? [] : [
-    {
-      type: 'button',
-      style: 'primary',
-      color: '#1DB446',
-      height: 'sm',
-      action: {
-        type: 'postback',
-        label: '参加する！',
-        data: `action=join&recId=${recId}`
-      }
-    },
-    {
-      type: 'button',
-      style: 'secondary',
-      height: 'sm',
-      margin: 'xs',
-      action: {
-        type: 'postback',
-        label: 'キャンセル',
-        data: `action=leave&recId=${recId}`
-      }
-    },
-    {
-      type: 'button',
-      style: 'link',
-      color: '#ff4d4f',
-      height: 'sm',
-      action: {
-        type: 'postback',
-        label: '募集を締め切る（主のみ）',
-        data: `action=close&recId=${recId}`
-      }
-    }
-  ];
-
-  return {
-    type: 'bubble',
-    body: {
-      type: 'box',
-      layout: 'vertical',
-      contents: [
-        { type: 'text', text: statusTitle, weight: 'bold', size: 'lg', color: themeColor },
-        { type: 'text', text: rec.game, weight: 'bold', size: 'xl', margin: 'md' },
-        { type: 'separator', margin: 'md' },
-        {
-          type: 'box',
-          layout: 'vertical',
-          margin: 'md',
-          spacing: 'sm',
-          contents: [
-            { type: 'text', text: `⏰ 開始時間: ${rec.time}`, size: 'sm', color: '#555555' },
-            { type: 'text', text: `👥 定員: ${rec.members}`, size: 'sm', color: '#555555' },
-            { type: 'text', text: `👤 参加者: ${participantNames}`, size: 'sm', color: '#1DB446', weight: 'bold', wrap: true }
-          ]
-        }
-      ]
-    },
-    footer: {
-      type: 'box',
-      layout: 'vertical',
-      spacing: 'xs',
-      contents: footerButtons
-    }
-  };
 }
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-
-
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-
 
