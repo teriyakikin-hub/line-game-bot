@@ -10,6 +10,8 @@ const client = new line.Client(config);
 const app = express();
 
 const userSessions = {};
+// 募集データを保持するオブジェクト
+const activeRecruitments = {};
 
 app.post('/webhook', line.middleware(config), (req, res) => {
   Promise.all(req.body.events.map(handleEvent))
@@ -21,6 +23,57 @@ app.post('/webhook', line.middleware(config), (req, res) => {
 });
 
 async function handleEvent(event) {
+  // ポストバックイベント（カードのボタンが押された時）
+  if (event.type === 'postback') {
+    const data = new URLSearchParams(event.postback.data);
+    const action = data.get('action');
+    const userId = event.source.userId;
+
+    if (action === 'join' || action === 'leave' || action === 'close') {
+      const recId = data.get('recId');
+      const rec = activeRecruitments[recId];
+
+      if (!rec) {
+        return client.replyMessage(event.replyToken, {
+          type: 'text',
+          text: 'この募集データは期限切れまたは存在しません。'
+        });
+      }
+
+      // ユーザーの表示名を取得
+      let userName = 'メンバー';
+      try {
+        const profile = await client.getProfile(userId);
+        userName = profile.displayName;
+      } catch (e) {
+        if (event.source.groupId) {
+          try {
+            const profile = await client.getGroupMemberProfile(event.source.groupId, userId);
+            userName = profile.displayName;
+          } catch (err) {}
+        }
+      }
+
+      // アクションに応じたデータ更新
+      if (action === 'join') {
+        if (!rec.participants.includes(userName)) {
+          rec.participants.push(userName);
+        }
+      } else if (action === 'leave') {
+        rec.participants = rec.participants.filter(name => name !== userName);
+      } else if (action === 'close') {
+        rec.closed = true;
+      }
+
+      // メッセージを増やさず、カードそのものを直接書き換えて返信する
+      return client.replyMessage(event.replyToken, {
+        type: 'flex',
+        altText: rec.closed ? `【募集終了】${rec.game}` : `【募集更新】${rec.game}`,
+        contents: createFlexBubble(recId, rec)
+      });
+    }
+  }
+
   if (event.type !== 'message' || event.message.type !== 'text') {
     return Promise.resolve(null);
   }
@@ -32,11 +85,11 @@ async function handleEvent(event) {
   if (text.startsWith('/募集 ') || text.startsWith('募集 ')) {
     const args = text.split(/\s+/).slice(1);
     if (args.length >= 3) {
-      return sendCard(event.replyToken, args[0], args[1], args[2]);
+      return sendNewCard(event.replyToken, args[0], args[1], args[2]);
     }
   }
 
-  // 2. 募集スタート（クイックリプライ）
+  // 2. 対話募集スタート
   if (text === '募集' || text === '/募集') {
     userSessions[userId] = { step: 'GAME' };
     return client.replyMessage(event.replyToken, {
@@ -84,25 +137,86 @@ async function handleEvent(event) {
       const members = text;
       delete userSessions[userId];
 
-      return sendCard(event.replyToken, game, time, members);
+      return sendNewCard(event.replyToken, game, time, members);
     }
   }
 
   return Promise.resolve(null);
 }
 
-// シンプルで堅牢なカード送信処理
-function sendCard(replyToken, game, time, members) {
+// 新しい募集カードを作成して送信する関数
+function sendNewCard(replyToken, game, time, members) {
+  const recId = Date.now().toString();
   const memberText = (members === 'なし' || members === '無制限') ? '制限なし' : `${members.replace('人', '')}人`;
 
-  const flexContents = {
+  activeRecruitments[recId] = {
+    game: game,
+    time: time,
+    members: memberText,
+    participants: [],
+    closed: false
+  };
+
+  return client.replyMessage(replyToken, {
+    type: 'flex',
+    altText: `【募集】${game} (${time}〜)`,
+    contents: createFlexBubble(recId, activeRecruitments[recId])
+  });
+}
+
+// Flex Message (募集カード) のレイアウト生成関数
+function createFlexBubble(recId, rec) {
+  const participantNames = rec.participants.length > 0 
+    ? rec.participants.join(', ') 
+    : 'なし';
+
+  const statusTitle = rec.closed ? '❌ 募集終了' : '🎮 メンバー募集！';
+  const themeColor = rec.closed ? '#aaaaaa' : '#1DB446';
+
+  const footerButtons = rec.closed ? [] : [
+    {
+      type: 'button',
+      style: 'primary',
+      color: '#1DB446',
+      height: 'sm',
+      action: {
+        type: 'postback',
+        label: '参加する！',
+        data: `action=join&recId=${recId}`
+      }
+    },
+    {
+      type: 'button',
+      style: 'secondary',
+      height: 'sm',
+      margin: 'xs',
+      action: {
+        type: 'postback',
+        label: 'キャンセル',
+        data: `action=leave&recId=${recId}`
+      }
+    },
+    {
+      type: 'button',
+      style: 'link',
+      color: '#ff4d4f',
+      height: 'sm',
+      action: {
+        type: 'postback',
+        label: '募集を締め切る',
+        data: `action=close&recId=${recId}`
+      }
+    }
+  ];
+
+  return {
     type: 'bubble',
     body: {
       type: 'box',
       layout: 'vertical',
       contents: [
-        { type: 'text', text: '🎮 メンバー募集！', weight: 'bold', size: 'lg', color: '#1DB446' },
-        { type: 'text', text: game, weight: 'bold', size: 'xl', margin: 'md' },
+        { type: 'text', text: statusTitle, weight: 'bold', size: 'lg', color: themeColor },
+        { type: 'text', text: rec.game, weight: 'bold', size: 'xl', margin: 'md' },
         { type: 'separator', margin: 'md' },
         {
           type: 'box',
@@ -110,8 +224,9 @@ function sendCard(replyToken, game, time, members) {
           margin: 'md',
           spacing: 'sm',
           contents: [
-            { type: 'text', text: `⏰ 開始時間: ${time}`, size: 'sm', color: '#555555' },
-            { type: 'text', text: `👥 募集人数: ${memberText}`, size: 'sm', color: '#555555' }
+            { type: 'text', text: `⏰ 開始時間: ${rec.time}`, size: 'sm', color: '#555555' },
+            { type: 'text', text: `👥 定員: ${rec.members}`, size: 'sm', color: '#555555' },
+            { type: 'text', text: `👤 参加者: ${participantNames}`, size: 'sm', color: '#1DB446', weight: 'bold', wrap: true }
           ]
         }
       ]
@@ -119,28 +234,14 @@ function sendCard(replyToken, game, time, members) {
     footer: {
       type: 'box',
       layout: 'vertical',
-      contents: [
-        {
-          type: 'button',
-          style: 'primary',
-          color: '#1DB446',
-          action: {
-            type: 'message',
-            label: '参加する！',
-            text: '参加します！'
-          }
-        }
-      ]
+      spacing: 'xs',
+      contents: footerButtons
     }
   };
-
-  return client.replyMessage(replyToken, {
-    type: 'flex',
-    altText: `【募集】${game} (${time}〜)`,
-    contents: flexContents
-  });
 }
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+
 
