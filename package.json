@@ -1,10 +1,12 @@
 {
   "name": "line-game-bot",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "index/index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index/index.js"
   },
   "dependencies": {
+    "express": "^4.19.2",
+    "@line/bot-sdk": "^9.0.0"
   }
 }
