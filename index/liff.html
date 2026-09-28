@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>募集確認</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    body { font-family: sans-serif; padding: 20px; background: #f5f5f5; text-align: center; }
+    .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    h2 { color: #1DB446; margin-top: 0; }
+    .btn { display: block; width: 100%; padding: 12px; margin: 10px 0; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; }
+    .btn-join { background: #1DB446; color: white; }
+    .btn-leave { background: #888; color: white; }
+    .btn-close { background: #ff4d4f; color: white; }
+    .members { background: #f0f0f0; padding: 10px; border-radius: 6px; text-align: left; margin: 15px 0; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2 id="status">🎮 メンバー募集中</h2>
+    <h1 id="game">-</h1>
+    <p>⏰ 開始時間: <span id="time">-</span></p>
+    <p>👥 定員: <span id="members">-</span></p>
+    
+    <div class="members">
+      <strong>👤 参加者一覧:</strong>
+      <div id="participant-list">読み込み中...</div>
+    </div>
+
+    <div id="buttons">
+      <button class="btn btn-join" onclick="handleAction('join')">参加する！</button>
+      <button class="btn btn-leave" onclick="handleAction('leave')">キャンセル</button>
+      <button class="btn btn-close" onclick="handleAction('close')">募集を締め切る（主のみ）</button>
+    </div>
+  </div>
+
+  <script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const recId = urlParams.get('recId');
+    let userProfile = null;
+
+    async function init() {
+      await liff.init({ liffId: "YOUR_LIFF_ID" }); // liff.init
+      if (!liff.isLoggedIn()) {
+        liff.login();
+        return;
+      }
+      userProfile = await liff.getProfile();
+      loadData();
+    }
+
+    async function loadData() {
+      const res = await fetch(`/api/recruitment/${recId}`);
+      if (!res.ok) {
+        document.body.innerHTML = '<h3>この募集は存在しないか削除されました。</h3>';
+        return;
+      }
+      const data = await res.json();
+      document.getElementById('game').innerText = data.game;
+      document.getElementById('time').innerText = data.time;
+      document.getElementById('members').innerText = data.members;
+      
+      const list = data.participants.length > 0 ? data.participants.join(', ') : 'なし';
+      document.getElementById('participant-list').innerText = list;
+
+      if (data.closed) {
+        document.getElementById('status').innerText = '❌ 募集終了';
+        document.getElementById('status').style.color = '#888';
+        document.getElementById('buttons').style.display = 'none';
+      }
+    }
+
+    async function handleAction(action) {
+      const res = await fetch('/api/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recId: recId,
+          userId: userProfile.userId,
+          userName: userProfile.displayName,
+          action: action
+        })
+      });
+      const result = await res.json();
+      if (result.error) {
+        alert(result.error);
+      } else {
+        loadData();
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>
+
