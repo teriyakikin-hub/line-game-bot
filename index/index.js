@@ -13,26 +13,49 @@ const app = express();
 const userSessions = {};
 const activeRecruitments = {};
 
-// LIFF用のWebページを提供
+// 1. LIFF用のWebページを提供
 app.get('/liff', (req, res) => {
   res.sendFile(path.join(__dirname, 'liff.html'));
 });
 
-// API endpoint for LIFF data
+// 2. LIFFからのデータ取得・操作用API
+app.use('/api', express.json());
+
 app.get('/api/recruitment/:id', (req, res) => {
   const rec = activeRecruitments[req.params.id];
   if (!rec) return res.status(404).json({ error: 'Not found' });
   res.json(rec);
 });
 
-app.use('/webhook', express.json());
+app.post('/api/action', (req, res) => {
+  const { recId, userId, userName, action } = req.body;
+  const rec = activeRecruitments[recId];
 
+  if (!rec) return res.status(400).json({ error: '募集が存在しないか終了しています。' });
+
+  if (action === 'close' && userId !== rec.ownerId) {
+    return res.status(403).json({ error: '募集主しか締め切れません！' });
+  }
+
+  if (action === 'join') {
+    if (!rec.participants.includes(userName)) {
+      rec.participants.push(userName);
+    }
+  } else if (action === 'leave') {
+    rec.participants = rec.participants.filter(name => name !== userName);
+  } else if (action === 'close') {
+    rec.closed = true;
+  }
+
+  res.json({ success: true, rec });
+});
+
+// 3. LINE Webhook処理（express.jsonは通さず直接ミドルウェアに渡す）
 app.post('/webhook', line.middleware(config), (req, res) => {
   Promise.all(req.body.events.map(handleEvent))
     .then((result) => res.json(result))
     .catch((err) => {
       console.error('Webhook Error:', err);
-      // LINEの「検証」時にエラーにならないよう200を返す
       res.status(200).end();
     });
 });
@@ -167,4 +190,6 @@ function sendNewCard(replyToken, ownerId, game, time, members) {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+
 
