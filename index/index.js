@@ -10,7 +10,6 @@ const client = new line.Client(config);
 const app = express();
 
 const userSessions = {};
-// 募集データ（作成者のIDも保持）
 const activeRecruitments = {};
 
 app.post('/webhook', line.middleware(config), (req, res) => {
@@ -34,15 +33,15 @@ async function handleEvent(event) {
     if (!rec) {
       return client.replyMessage(event.replyToken, {
         type: 'text',
-        text: 'この募集は終了しているか、データが存在しません。'
+        text: 'この募集は終了しているか、期限切れです。'
       });
     }
 
-    // 締め切り権限チェック（募集主以外はブロック）
+    // 締切権限チェック（作成者以外はメッセージ送信）
     if (action === 'close' && userId !== rec.ownerId) {
       return client.replyMessage(event.replyToken, {
         type: 'text',
-        text: '⚠️ 募集を締め切ることができるのは、募集を開始した人のみです！'
+        text: '⚠️ 募集を締め切ることができるのは、募集を開始した本人のみです！'
       });
     }
 
@@ -71,13 +70,23 @@ async function handleEvent(event) {
       rec.closed = true;
     }
 
-    // メッセージ（新しいカード）は返信せず、元のメッセージの内容更新のみに留める
-    // ※LINEの仕様上、連打によるカードの連投を防ぐため、新規投稿を行いません
-    return client.replyMessage(event.replyToken, {
-      type: 'flex',
-      altText: rec.closed ? `【募集終了】${rec.game}` : `【募集更新】${rec.game}`,
-      contents: createFlexBubble(recId, rec)
-    });
+    // ★重要: メッセージ更新 API を試行（元のカードを直接編集してメッセージを増やさない）
+    try {
+      // replyToken ではなく、元メッセージを直接アップデート
+      await client.updateFlexMessage(event.message.id, {
+        type: 'flex',
+        altText: rec.closed ? `【募集終了】${rec.game}` : `【募集更新】${rec.game}`,
+        contents: createFlexBubble(recId, rec)
+      });
+      return Promise.resolve(null);
+    } catch (err) {
+      // 万が一 updateFlexMessage が使えない環境（通常アカウント等）の場合は旧方式で返信
+      return client.replyMessage(event.replyToken, {
+        type: 'flex',
+        altText: rec.closed ? `【募集終了】${rec.game}` : `【募集更新】${rec.game}`,
+        contents: createFlexBubble(recId, rec)
+      });
+    }
   }
 
   if (event.type !== 'message' || event.message.type !== 'text') {
@@ -150,13 +159,12 @@ async function handleEvent(event) {
   return Promise.resolve(null);
 }
 
-// 新規カード送信関数（作成者のID: ownerId を保存）
 function sendNewCard(replyToken, ownerId, game, time, members) {
   const recId = Date.now().toString();
   const memberText = (members === 'なし' || members === '無制限') ? '制限なし' : `${members.replace('人', '')}人`;
 
   activeRecruitments[recId] = {
-    ownerId: ownerId, // 作成者のIDを記録
+    ownerId: ownerId,
     game: game,
     time: time,
     members: memberText,
@@ -171,7 +179,6 @@ function sendNewCard(replyToken, ownerId, game, time, members) {
   });
 }
 
-// カードのレイアウト生成
 function createFlexBubble(recId, rec) {
   const participantNames = rec.participants.length > 0 
     ? rec.participants.join(', ') 
@@ -248,6 +255,9 @@ function createFlexBubble(recId, rec) {
 }
 
 const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 
