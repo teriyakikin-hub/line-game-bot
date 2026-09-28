@@ -1,212 +1,294 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ゲーム募集★みんなであそぼう！</title>
-  <!-- Google Fonts から丸ゴシック（ポップ系フォント）を読み込み -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@500;800;900&display=swap" rel="stylesheet">
-  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
-  <style>
-    * {
-      box-sizing: border-box;
-      font-family: 'M PLUS Rounded 1c', sans-serif;
-    }
-    body {
-      background: #EBF8FF;
-      margin: 0;
-      padding: 16px;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      min-height: 100vh;
-    }
-    .card {
-      background: #FFFFFF;
-      width: 100%;
-      max-width: 400px;
-      border-radius: 24px;
-      padding: 20px;
-      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
-      border: 4px solid #4ECDC4;
-      text-align: center;
-      position: relative;
-    }
-    .status-badge {
-      display: inline-block;
-      background: #FF6B6B;
-      color: #FFF;
-      font-weight: 900;
-      font-size: 14px;
-      padding: 6px 16px;
-      border-radius: 20px;
-      margin-bottom: 8px;
-    }
-    .game-title {
-      font-size: 26px;
-      font-weight: 900;
-      color: #2D3748;
-      margin: 4px 0 16px 0;
-      word-break: break-all;
-    }
-    .info-box {
-      background: #FFF9E6;
-      border: 2px dashed #FFE066;
-      border-radius: 16px;
-      padding: 12px;
-      margin-bottom: 16px;
-      text-align: left;
-    }
-    .info-item {
-      font-size: 15px;
-      font-weight: 800;
-      color: #4A5568;
-      margin: 6px 0;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .members-box {
-      background: #F0FFF4;
-      border: 2px solid #C6F6D5;
-      border-radius: 16px;
-      padding: 12px;
-      text-align: left;
-      margin-bottom: 20px;
-    }
-    .members-title {
-      font-weight: 900;
-      color: #2F855A;
-      font-size: 15px;
-      margin-bottom: 6px;
-    }
-    .members-list {
-      font-weight: 800;
-      color: #2D3748;
-      font-size: 14px;
-      line-height: 1.5;
-      word-break: break-all;
-    }
-    .btn-group {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    .btn {
-      width: 100%;
-      padding: 14px;
-      border: none;
-      border-radius: 16px;
-      font-weight: 900;
-      font-size: 16px;
-      cursor: pointer;
-      box-shadow: 0 4px 0 rgba(0, 0, 0, 0.15);
-      transition: all 0.1s ease;
-    }
-    .btn:active {
-      transform: translateY(3px);
-      box-shadow: 0 1px 0 rgba(0, 0, 0, 0.15);
-    }
-    .btn-join {
-      background: #2EC4B6;
-      color: #FFF;
-    }
-    .btn-leave {
-      background: #CBD5E0;
-      color: #4A5568;
-    }
-    .btn-close {
-      background: #FF9F1C;
-      color: #FFF;
-    }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div id="status" class="status-badge">🎮 メンバー募集中！</div>
-    <div id="game" class="game-title">読み込み中...</div>
+const express = require('express');
+const line = require('@line/bot-sdk');
+const path = require('path');
+const cron = require('node-cron'); // 時間監視用
 
-    <div class="info-box">
-      <div class="info-item">⏰ スタート：<span id="time">-</span></div>
-      <div class="info-item">👥 ぼしゅう人数：<span id="members">-</span></div>
-    </div>
+const config = {
+  channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.CHANNEL_SECRET
+};
 
-    <div class="members-box">
-      <div class="members-title">✨ さんかする人（<span id="count">0</span>）</div>
-      <div id="participant-list" class="members-list">読み込み中...</div>
-    </div>
+const client = new line.messagingApi.MessagingApiClient({
+  channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN
+});
 
-    <div id="buttons" class="btn-group">
-      <button class="btn btn-join" onclick="handleAction('join')">✨ さんかする！</button>
-      <button class="btn btn-leave" onclick="handleAction('leave')">💦 キャンセル</button>
-      <button class="btn btn-close" onclick="handleAction('close')">🔒 しめきる（主のみ）</button>
-    </div>
-  </div>
+const app = express();
 
-  <script>
-    const urlParams = new URLSearchParams(window.location.search);
-    const recId = urlParams.get('recId');
-    let userProfile = null;
+// メモリ上で募集データを管理
+const activeRecruitments = {};
 
-    async function init() {
-      // 自分のLIFF IDに合わせてね
-      await liff.init({ liffId: "2011774045-4qPdgCvw" });
-      if (!liff.isLoggedIn()) {
-        liff.login();
-        return;
-      }
-      userProfile = await liff.getProfile();
-      loadData();
-    }
+// 静的ファイルの提供（LIFF用 html 等）→ index/public/ の中身が公開される
+app.use(express.static(path.join(__dirname, 'public')));
 
-    async function loadData() {
-      const res = await fetch(`/api/recruitment/${recId}`);
-      if (!res.ok) {
-        document.body.innerHTML = '<h3>この募集は見つかりませんでした💦</h3>';
-        return;
-      }
-      const data = await res.json();
-      document.getElementById('game').innerText = data.game;
-      document.getElementById('time').innerText = data.time;
-      document.getElementById('members').innerText = data.members;
-      
-      const count = data.participants ? data.participants.length : 0;
-      document.getElementById('count').innerText = count + '人';
+// Webhookの署名検証ミドルウェア
+app.post('/webhook', line.middleware(config), (req, res) => {
+  Promise.all(req.body.events.map(handleEvent))
+    .then((result) => res.json(result))
+    .catch((err) => {
+      console.error(err);
+      res.status(500).end();
+    });
+});
 
-      const list = count > 0 ? data.participants.join(' 、 ') : 'まだ誰もいません！';
-      document.getElementById('participant-list').innerText = list;
+// LIFFアプリからのAPIリクエスト用（JSONパース）
+app.use(express.json());
 
-      if (data.closed) {
-        const statusEl = document.getElementById('status');
-        statusEl.innerText = '❌ しめきりました';
-        statusEl.style.background = '#A0AEC0';
-        document.getElementById('buttons').style.display = 'none';
-      }
-    }
+// --- 募集情報の取得 API ---
+app.get('/api/recruitment/:id', (req, res) => {
+  const rec = activeRecruitments[req.params.id];
+  if (!rec) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  res.json(rec);
+});
 
-    async function handleAction(action) {
-      const res = await fetch('/api/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          recId: recId,
-          userId: userProfile.userId,
-          userName: userProfile.displayName,
-          action: action
-        })
-      });
-      const result = await res.json();
-      if (result.error) {
-        alert(result.error);
-      } else {
-        loadData();
-      }
-    }
+// --- 参加 / キャンセル / 締め切り / 人数制限チェック API ---
+app.post('/api/action', (req, res) => {
+  const { recId, userId, userName, action } = req.body;
+  const rec = activeRecruitments[recId];
 
-    init();
-  </script>
-</body>
-</html>
+  if (!rec) return res.status(400).json({ error: '募集が存在しないか終了しています。' });
 
+  // 締め切り後は参加・キャンセル不可
+  if (rec.closed && action !== 'close') {
+    return res.status(400).json({ error: 'この募集は締め切られています。' });
+  }
+
+  // 締め切り権限チェック（募集主のみ）
+  if (action === 'close' && userId !== rec.ownerId) {
+    return res.status(403).json({ error: '募集主しか締め切れません！' });
+  }
+
+  if (action === 'join') {
+    if (!rec.participants.includes(userName)) {
+
+      // 人数制限のチェック処理
+      if (rec.members !== '制限なし') {
+        const maxMembers = parseInt(rec.members.replace('人', ''), 10);
+        if (!isNaN(maxMembers) && rec.participants.length >= maxMembers) {
+          return res.status(400).json({ error: '定員に達しているため参加できません！💦' });
+        }
+      }
+
+      rec.participants.push(userName);
+    }
+  } else if (action === 'leave') {
+    rec.participants = rec.participants.filter(name => name !== userName);
+  } else if (action === 'close') {
+    rec.closed = true;
+  }
+
+  res.json({ success: true, rec });
+});
+
+// --- LINE Webhookイベント処理 ---
+async function handleEvent(event) {
+  if (event.type !== 'message' || event.message.type !== 'text') {
+    return Promise.resolve(null);
+  }
+
+  const text = event.message.text.trim();
+  const userId = event.source.userId;
+  const groupId = event.source.groupId || event.source.roomId || userId;
+
+  // ユーザー名を取得
+  let userName = 'ゲスト';
+  try {
+    if (event.source.groupId) {
+      const profile = await client.getGroupMemberProfile(event.source.groupId, userId);
+      userName = profile.displayName;
+    } else {
+      const profile = await client.getProfile(userId);
+      userName = profile.displayName;
+    }
+  } catch (e) {
+    console.log('プロフィール取得エラー:', e);
+  }
+
+  // --- 一発コマンド処理 (/募集 [ゲーム名] [時間] [人数]) ---
+  if (text.startsWith('/募集')) {
+    const args = text.split(/\s+/);
+    const game = args[1] || 'ゲーム';
+    const time = args[2] || '今から';
+    const members = args[3] || '制限なし';
+
+    const recId = 'rec_' + Date.now();
+    activeRecruitments[recId] = {
+      game: game,
+      time: time,
+      members: members,
+      ownerId: userId,
+      ownerName: userName,   // 記録メッセージ用
+      groupId: groupId,
+      participants: [userName],
+      closed: false,
+      notified: false,       // 結果カード送信済みフラグ
+      createdAt: Date.now()  // 30日自動削除用の作成日時
+    };
+
+    const liffUrl = `https://liff.line.me/${process.env.LIFF_ID}?recId=${recId}`;
+
+    const flexMsg = {
+      type: 'flex',
+      altText: `🎮 ${game} のメンバー募集！`,
+      contents: {
+        type: 'bubble',
+        styles: { header: { backgroundColor: '#FF6B6B' } },
+        header: {
+          type: 'box',
+          layout: 'vertical',
+          contents: [
+            { type: 'text', text: '🎮 メンバー募集中！', weight: 'bold', color: '#FFFFFF', size: 'sm' },
+            { type: 'text', text: game, weight: 'bold', color: '#FFFFFF', size: 'xl', margin: 'xs' }
+          ]
+        },
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          contents: [
+            { type: 'text', text: `⏰ 時間: ${time}`, size: 'sm', weight: 'bold' },
+            { type: 'text', text: `👥 募集人数: ${members}`, size: 'sm', weight: 'bold', margin: 'xs' },
+            { type: 'text', text: `👑 募集主: ${userName}`, size: 'xs', color: '#888888', margin: 'md' }
+          ]
+        },
+        footer: {
+          type: 'box',
+          layout: 'vertical',
+          contents: [
+            {
+              type: 'button',
+              action: { type: 'uri', label: '参加・確認・管理する', uri: liffUrl },
+              style: 'primary',
+              color: '#2EC4B6'
+            }
+          ]
+        }
+      }
+    };
+
+    return client.replyMessage({
+      replyToken: event.replyToken,
+      messages: [flexMsg]
+    });
+  }
+}
+
+// --- 30日経過した古い募集データの自動クリーンアップ ---
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+function cleanupOldRecruitments() {
+  const now = Date.now();
+  Object.keys(activeRecruitments).forEach((recId) => {
+    const rec = activeRecruitments[recId];
+    if (rec.createdAt && (now - rec.createdAt > THIRTY_DAYS_MS)) {
+      delete activeRecruitments[recId];
+      console.log(`[自動削除] 30日経過した古い募集を削除しました: ${recId}`);
+    }
+  });
+}
+// 24時間に1回クリーンアップを実行
+setInterval(cleanupOldRecruitments, 24 * 60 * 60 * 1000);
+
+// --- 指定時間に結果カード送信 → 10分後に削除して記録を送信 ---
+const RECORD_AFTER_MS = 10 * 60 * 1000;
+
+cron.schedule('* * * * *', async () => {
+  const currentHHMM = new Date().toLocaleTimeString('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
+
+  for (const recId in activeRecruitments) {
+    const rec = activeRecruitments[recId];
+
+    if (!rec.notified && rec.time === currentHHMM && rec.groupId) {
+      rec.notified = true;
+      rec.closed = true;
+
+      const memberList = rec.participants.length > 0
+        ? rec.participants.map((name, i) => `${i + 1}. ${name}`).join('\n')
+        : '参加者がいませんでした💦';
+
+      const resultMessage = {
+        type: 'flex',
+        altText: `【時間になりました！】${rec.game} のメンバー確定！`,
+        contents: {
+          type: 'bubble',
+          styles: { header: { backgroundColor: '#4ECDC4' } },
+          header: {
+            type: 'box',
+            layout: 'vertical',
+            contents: [
+              { type: 'text', text: '⏰ 時間になりました！結果発表 🎮', weight: 'bold', color: '#FFFFFF', size: 'sm' },
+              { type: 'text', text: rec.game, weight: 'bold', color: '#FFFFFF', size: 'xl', margin: 'xs' }
+            ]
+          },
+          body: {
+            type: 'box',
+            layout: 'vertical',
+            contents: [
+              { type: 'text', text: `募集人数: ${rec.members}`, size: 'xs', color: '#888888' },
+              { type: 'separator', margin: 'md' },
+              { type: 'text', text: '✨ 本日の確定メンバー', weight: 'bold', size: 'sm', margin: 'md', color: '#2D3748' },
+              { type: 'text', text: memberList, size: 'sm', color: '#4A5568', wrap: true, margin: 'sm' }
+            ]
+          },
+          footer: {
+            type: 'box',
+            layout: 'vertical',
+            contents: [
+              { type: 'text', text: '準備してゲームに参加しよう！🚀', size: 'xs', color: '#A0AEC0', align: 'center' }
+            ]
+          }
+        }
+      };
+
+      try {
+        await client.pushMessage({
+          to: rec.groupId,
+          messages: [resultMessage]
+        });
+        console.log(`[結果カード送信完了] ${recId} -> ${rec.groupId}`);
+      } catch (err) {
+        console.error('結果カード送信エラー:', err);
+      }
+
+      // 10分後：データを消して、記録を普通のメッセージで送信
+      setTimeout(async () => {
+        const target = activeRecruitments[recId];
+        if (!target) return;
+
+        const names = target.participants.length > 0
+          ? target.participants.join('、')
+          : 'なし';
+
+        const recordText =
+          `📝 募集の記録\n` +
+          `募集主：${target.ownerName || '不明'}\n` +
+          `時間：${target.time}\n` +
+          `内容：${target.game}\n` +
+          `参加者：${names}`;
+
+        delete activeRecruitments[recId];
+        console.log(`[自動削除] ${recId}`);
+
+        try {
+          await client.pushMessage({
+            to: target.groupId,
+            messages: [{ type: 'text', text: recordText }]
+          });
+          console.log(`[記録送信完了] ${recId}`);
+        } catch (err) {
+          console.error('記録送信エラー:', err);
+        }
+      }, RECORD_AFTER_MS);
+    }
+  }
+});
+
+// --- サーバー起動 ---
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
