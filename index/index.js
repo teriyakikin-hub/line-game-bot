@@ -1,5 +1,5 @@
 const express = require('express');
-const line = require('@line-bot-sdk');
+const line = require('@line/bot-sdk');
 const path = require('path');
 const cron = require('node-cron'); // ★機能3: 時間監視用
 
