@@ -14,14 +14,14 @@ const app = express();
 // メモリ上で募集データを管理
 const activeRecruitments = {};
 
-// ★ index/ フォルダから1つ上の親フォルダにある public/ を静的ファイルとして公開
+// index/ フォルダから1つ上の親フォルダにある public/ を静的ファイルとして公開
 const publicPath = path.join(__dirname, '..', 'public');
 app.use(express.static(publicPath));
 
 // JSONパース用ミドルウェア
 app.use(express.json());
 
-// ★ LIFF画面へのアクセスルート（Cannot GET /liff 対策）
+// LIFF画面へのアクセスルート
 app.get(['/', '/liff', '/index.html'], (req, res) => {
   res.sendFile(path.join(publicPath, 'index.html'));
 });
@@ -31,7 +31,7 @@ app.post('/webhook', line.middleware(config), (req, res) => {
   Promise.all(req.body.events.map(handleEvent))
     .then((result) => res.json(result))
     .catch((err) => {
-      console.error(err);
+      console.error('Webhook Error:', err);
       res.status(500).end();
     });
 });
@@ -45,7 +45,7 @@ app.get('/api/recruitment/:id', (req, res) => {
   res.json(rec);
 });
 
-// --- 【機能1】参加 / キャンセル / 締め切り / 人数制限チェック API ---
+// --- 参加 / キャンセル / 締め切り / 人数制限チェック API ---
 app.post('/api/action', (req, res) => {
   const { recId, userId, userName, action } = req.body;
   const rec = activeRecruitments[recId];
@@ -59,7 +59,6 @@ app.post('/api/action', (req, res) => {
 
   if (action === 'join') {
     if (!rec.participants.includes(userName)) {
-      // 人数制限オーバーのブロック処理
       if (rec.members !== '制限なし') {
         const maxMembers = parseInt(rec.members.replace('人', ''), 10);
         if (!isNaN(maxMembers) && rec.participants.length >= maxMembers) {
@@ -105,14 +104,14 @@ async function handleEvent(event) {
   let members = '制限なし';
   let isRecruit = false;
 
-  // ① 「暇人募集中 〇〇」ショートカットコマンドの判定
+  // ① 「暇人募集中 〇〇」ショートカット
   if (text.startsWith('暇人募集中')) {
     isRecruit = true;
     const args = text.split(/\s+/);
     const actionText = args.slice(1).join(' ');
     game = actionText ? `暇人募集中 (${actionText})` : '暇人募集中';
   } 
-  // ② 通常の 「/募集 [ゲーム] [時間] [人数]」コマンドの判定
+  // ② 通常の 「/募集 [ゲーム] [時間] [人数]」
   else if (text.startsWith('/募集')) {
     isRecruit = true;
     const args = text.split(/\s+/);
@@ -121,7 +120,6 @@ async function handleEvent(event) {
     members = args[3] || '制限なし';
   }
 
-  // 募集メッセージ作成
   if (isRecruit) {
     const recId = 'rec_' + Date.now();
     activeRecruitments[recId] = {
@@ -132,8 +130,8 @@ async function handleEvent(event) {
       groupId: groupId,
       participants: [userName],
       closed: false,
-      notified: false,       // 通知済みフラグ
-      createdAt: Date.now()   // 30日自動削除用の作成日時
+      notified: false,
+      createdAt: Date.now()
     };
 
     const liffUrl = `https://liff.line.me/${process.env.LIFF_ID}?recId=${recId}`;
@@ -176,11 +174,15 @@ async function handleEvent(event) {
       }
     };
 
-    return client.replyMessage(event.replyToken, flexMsg);
+    // ★修正ポイント：最新SDKに対応した書き方
+    return client.replyMessage({
+      replyToken: event.replyToken,
+      messages: [flexMsg]
+    });
   }
 }
 
-// --- 【機能2】30日経過した古い募集データの自動クリーンアップ ---
+// --- 30日自動削除 ---
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 function cleanupOldRecruitments() {
   const now = Date.now();
@@ -188,13 +190,13 @@ function cleanupOldRecruitments() {
     const rec = activeRecruitments[recId];
     if (rec.createdAt && (now - rec.createdAt > THIRTY_DAYS_MS)) {
       delete activeRecruitments[recId];
-      console.log(`[自動削除] 30日経過した古い募集を削除しました: ${recId}`);
+      console.log(`[自動削除] 古い募集を削除しました: ${recId}`);
     }
   });
 }
 setInterval(cleanupOldRecruitments, 24 * 60 * 60 * 1000);
 
-// --- 【機能3】指定時間になったら自動で結果カードを送信 ---
+// --- 自動結果発表 ---
 cron.schedule('* * * * *', async () => {
   const now = new Date();
   const currentHHMM = now.toLocaleTimeString('ja-JP', {
@@ -250,7 +252,10 @@ cron.schedule('* * * * *', async () => {
       };
 
       try {
-        await client.pushMessage(rec.groupId, resultMessage);
+        await client.pushMessage({
+          to: rec.groupId,
+          messages: [resultMessage]
+        });
         console.log(`[結果カード送信完了] ${recId} -> ${rec.groupId}`);
       } catch (err) {
         console.error('結果カード送信エラー:', err);
@@ -259,7 +264,7 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
-// --- サーバー起動 ---
+// サーバー起動
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
